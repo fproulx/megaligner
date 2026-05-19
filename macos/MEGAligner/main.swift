@@ -4,6 +4,12 @@ private let appName = "MEGAligner"
 private let defaultModel = "sentence-transformers/LaBSE"
 private let defaultUVVersion = "0.11.15"
 private let bundledProjectDirectory = "MEGAligner"
+private let previewTextFont = NSFont.systemFont(ofSize: 12)
+private let previewRowHorizontalPadding: CGFloat = 18
+private let previewRowVerticalPadding: CGFloat = 16
+private let previewMinimumRowHeight: CGFloat = 56
+private let previewCollapsedMaximumRowHeight: CGFloat = 128
+private let previewExpandedMaximumRowHeight: CGFloat = 420
 
 private struct TmxPreviewRow {
     let source: String
@@ -197,6 +203,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var completedSelectionKey: String?
     private var tmxRows: [TmxPreviewRow] = []
     private var detailsExpanded = false
+    private var expandedPreviewRow: Int?
 
     private let inputField = NSTextField()
     private let outputField = NSTextField()
@@ -233,6 +240,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func buildInterface() {
@@ -447,6 +458,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         tmxTableView.allowsMultipleSelection = false
         tmxTableView.selectionHighlightStyle = .regular
         tmxTableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        tmxTableView.toolTip = "Select a row to expand wrapped text."
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(previewTableColumnDidResize(_:)),
+            name: NSTableView.columnDidResizeNotification,
+            object: tmxTableView
+        )
     }
 
     @objc private func showHeartEasterEgg(_ sender: NSClickGestureRecognizer) {
@@ -519,7 +537,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        66
+        guard row >= 0, row < tmxRows.count else {
+            return previewMinimumRowHeight
+        }
+
+        let previewRow = tmxRows[row]
+        let sourceHeight = previewTextHeight(
+            previewRow.source,
+            width: previewColumnTextWidth(identifier: "source")
+        )
+        let targetHeight = previewTextHeight(
+            previewRow.target,
+            width: previewColumnTextWidth(identifier: "target")
+        )
+        let naturalHeight = max(sourceHeight, targetHeight) + previewRowVerticalPadding
+        let maximumHeight = expandedPreviewRow == row ? previewExpandedMaximumRowHeight : previewCollapsedMaximumRowHeight
+        return min(max(previewMinimumRowHeight, ceil(naturalHeight)), maximumHeight)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -531,7 +564,60 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let cell = reusablePreviewCell(tableView: tableView, identifier: identifier)
         let previewRow = tmxRows[row]
         cell.textField?.stringValue = tableColumn.identifier.rawValue == "source" ? previewRow.source : previewRow.target
+        cell.textField?.maximumNumberOfLines = expandedPreviewRow == row ? 0 : 5
         return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let previousRow = expandedPreviewRow
+        let selectedRow = tmxTableView.selectedRow
+        expandedPreviewRow = selectedRow >= 0 ? selectedRow : nil
+
+        var changedRows = IndexSet()
+        if let previousRow {
+            changedRows.insert(previousRow)
+        }
+        if let expandedPreviewRow {
+            changedRows.insert(expandedPreviewRow)
+        }
+        if !changedRows.isEmpty {
+            tmxTableView.noteHeightOfRows(withIndexesChanged: changedRows)
+            tmxTableView.reloadData(forRowIndexes: changedRows, columnIndexes: IndexSet(integersIn: 0..<tmxTableView.numberOfColumns))
+        }
+    }
+
+    @objc private func previewTableColumnDidResize(_ notification: Notification) {
+        refreshVisiblePreviewRowHeights()
+    }
+
+    private func refreshVisiblePreviewRowHeights() {
+        guard !tmxRows.isEmpty else {
+            return
+        }
+
+        let visibleRows = tmxTableView.rows(in: tmxTableView.visibleRect)
+        guard visibleRows.location != NSNotFound, visibleRows.length > 0 else {
+            return
+        }
+
+        let rowIndexes = IndexSet(integersIn: visibleRows.location..<(visibleRows.location + visibleRows.length))
+        tmxTableView.noteHeightOfRows(withIndexesChanged: rowIndexes)
+    }
+
+    private func previewColumnTextWidth(identifier: String) -> CGFloat {
+        guard let column = tmxTableView.tableColumns.first(where: { $0.identifier.rawValue == identifier }) else {
+            return 260 - previewRowHorizontalPadding
+        }
+        return max(80, column.width - previewRowHorizontalPadding)
+    }
+
+    private func previewTextHeight(_ text: String, width: CGFloat) -> CGFloat {
+        let rect = (text as NSString).boundingRect(
+            with: NSSize(width: width, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: previewTextFont]
+        )
+        return ceil(rect.height)
     }
 
     private func reusablePreviewCell(
@@ -547,10 +633,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
         let textField = NSTextField(wrappingLabelWithString: "")
         textField.translatesAutoresizingMaskIntoConstraints = false
-        textField.font = .systemFont(ofSize: 12)
+        textField.font = previewTextFont
         textField.textColor = .labelColor
-        textField.maximumNumberOfLines = 3
-        textField.lineBreakMode = .byTruncatingTail
+        textField.maximumNumberOfLines = 5
+        textField.lineBreakMode = .byWordWrapping
+        textField.setContentCompressionResistancePriority(.required, for: .vertical)
 
         cell.addSubview(textField)
         cell.textField = textField
@@ -876,6 +963,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func clearTmxPreview() {
+        expandedPreviewRow = nil
         tmxRows = []
         tmxTableView.reloadData()
         tmxSummaryLabel.stringValue = "TMX Preview appears here after alignment."
@@ -898,16 +986,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             parser.delegate = previewParser
 
             if parser.parse(), previewParser.parseError == nil {
+                expandedPreviewRow = nil
                 tmxRows = previewParser.rows
                 tmxTableView.reloadData()
                 tmxSummaryLabel.stringValue = "TMX Preview - \(tmxRows.count) translation units"
             } else {
+                expandedPreviewRow = nil
                 tmxRows = []
                 tmxTableView.reloadData()
                 let message = previewParser.parseError?.localizedDescription ?? parser.parserError?.localizedDescription ?? "Unknown parser error"
                 tmxSummaryLabel.stringValue = "TMX Preview unavailable: \(message)"
             }
         } catch {
+            expandedPreviewRow = nil
             tmxRows = []
             tmxTableView.reloadData()
             tmxSummaryLabel.stringValue = "TMX Preview unavailable: \(error.localizedDescription)"
