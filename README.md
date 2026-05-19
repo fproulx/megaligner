@@ -27,6 +27,41 @@ The first time only, macOS may show `"Align.command" Not Opened` because the ZIP
 
 If macOS still does not show an **Open** button, open **System Settings** -> **Privacy & Security**, scroll to the security message for `Align.command`, click **Open Anyway**, then open `Align.command` again.
 
+## Native Mac App
+
+MEGAligner also includes a small native macOS app. It gives you one window for selecting the DOCX folder, choosing the `.tmx` output file, previewing detected pairs, running alignment, cancelling a run, and revealing the finished output.
+
+Build it on macOS:
+
+```bash
+make app
+open build/macos/MEGAligner.app
+```
+
+Create a GitHub release zip:
+
+```bash
+make dist-macos
+```
+
+The zip in `dist/` contains a self-contained `MEGAligner.app` bundle with the aligner source and lock file inside it. It can be copied to `/Applications` and launched from Finder. Runtime files are kept outside the app in `~/Library/Application Support/MEGAligner`, including the local `uv` install, managed Python install, Python environment, package cache, and language model cache. The first run still needs internet access to install dependencies and download the model; later runs reuse the cached files.
+
+Upload the generated zip as the GitHub Release asset:
+
+```bash
+gh release create v0.2.0 dist/MEGAligner-0.2.0-macos-arm64.zip --title "MEGAligner 0.2.0"
+```
+
+For a smooth double-click experience after downloading from GitHub, sign and notarize the app before uploading the release asset:
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE=megaligner-notary \
+make dist-macos
+```
+
+`make dist-macos` applies an ad-hoc signature when no `CODESIGN_IDENTITY` is set. Without Developer ID signing and notarization, macOS Gatekeeper may still require Control-click -> Open or an **Open Anyway** approval the first time. The terminal workflow below remains supported and does not use the macOS app.
+
 ## First Run
 
 The first run takes longer because MEGAligner sets itself up and downloads the language model it uses for alignment. Terminal will show status messages and progress while this happens. The first large download can take a short while to appear.
@@ -225,6 +260,13 @@ cli.py         command-line parser and entry point
 ```
 
 Dependencies are defined in `pyproject.toml` and locked in `uv.lock`. Docker installs with `uv sync`; `requirements.txt` is intentionally not used. The Linux Docker build uses PyTorch CPU wheels. Native macOS `uv` installs use the normal macOS wheel so MPS can be selected when available.
+
+The native app source lives in `macos/MEGAligner/`. The app bundle carries its own copy of the Python package and lock file, but it still runs the same `align-docx` command-line entry point internally. Build commands:
+
+```bash
+make app
+make dist-macos
+```
 
 The default tests avoid Docker, model downloads, and heavyweight runtime dependencies:
 

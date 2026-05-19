@@ -16,7 +16,7 @@ FORCE_BUILD ?= 0
 
 ALIGN_POSITIONAL := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 
-.PHONY: help build ensure-image align align-dockerized batch test
+.PHONY: help build ensure-image align align-dockerized batch app dist-macos test
 
 help:
 	@printf '%s\n' 'Usage:'
@@ -34,6 +34,12 @@ help:
 	@printf '%s\n' ''
 	@printf '%s\n' '  make align-dockerized DIR=/path/to/docx-dir OUT=/path/to/output.tmx'
 	@printf '%s\n' '      Runs the same workflow inside Docker.'
+	@printf '%s\n' ''
+	@printf '%s\n' '  make app'
+	@printf '%s\n' '      Builds build/macos/MEGAligner.app, a small native macOS wrapper.'
+	@printf '%s\n' ''
+	@printf '%s\n' '  make dist-macos'
+	@printf '%s\n' '      Builds a GitHub-release-ready macOS app zip in dist/.'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Useful variables:'
 	@printf '%s\n' '  UV_VERSION=0.11.15'
@@ -104,6 +110,12 @@ batch: ensure-image
 	    $(if $(filter 1,$(ALLOW_MODEL_DOWNLOAD)),--allow-model-download,) \
 	    $(if $(filter 1,$(PROFILE)),--profile,) \
 	    $(ALIGN_ARGS)
+
+app:
+	@sh scripts/build_macos_app.sh
+
+dist-macos:
+	@sh scripts/package_macos_app.sh
 
 test:
 	@python3 -B -m unittest discover -s tests

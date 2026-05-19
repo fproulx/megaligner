@@ -1,0 +1,187 @@
+name: Release macOS App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-main
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: macos-latest
+
+jobs:
+  release-macos:
+    name: Build and publish macOS app
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Configure optional Developer ID signing
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -eu
+
+          if [ -z "$MACOS_CERTIFICATE_P12" ] \
+            || [ -z "$MACOS_CERTIFICATE_PASSWORD" ] \
+            || [ -z "$APPLE_ID" ] \
+            || [ -z "$APPLE_TEAM_ID" ] \
+            || [ -z "$APPLE_APP_PASSWORD" ]; then
+            echo "Developer ID signing secrets are not configured; release will use ad-hoc signing."
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            echo "notary_profile=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          keychain_password=$(openssl rand -base64 24)
+          keychain_path="$RUNNER_TEMP/megaligner-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          notary_profile="megaligner-notary"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security default-keychain -s "$keychain_path"
+
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+
+          identity="$MACOS_CODESIGN_IDENTITY"
+          if [ -z "$identity" ]; then
+            identity=$(
+              security find-identity -v -p codesigning "$keychain_path" \
+                | awk -F '"' '/Developer ID Application/ { print $2; exit }'
+            )
+          fi
+
+          if [ -z "$identity" ]; then
+            echo "::error::No Developer ID Application identity found in imported certificate."
+            exit 1
+          fi
+
+          xcrun notarytool store-credentials "$notary_profile" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --keychain "$keychain_path"
+
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "notary_profile=$notary_profile" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS release zip
+        env:
+          CODESIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_PROFILE: ${{ steps.signing.outputs.notary_profile }}
+        run: make dist-macos
+
+      - name: Collect package metadata
+        id: package
+        run: |
+          set -eu
+          version=$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)
+          zip_path=$(find dist -maxdepth 1 -name "MEGAligner-${version}-macos-*.zip" -print -quit)
+          if [ -z "$zip_path" ]; then
+            echo "::error::Release zip was not produced."
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "zip_path=$zip_path"
+            echo "zip_name=$(basename "$zip_path")"
+            echo "short_sha=${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.zip_path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+          ZIP_PATH: ${{ steps.package.outputs.zip_path }}
+          SHORT_SHA: ${{ steps.package.outputs.short_sha }}
+          CODESIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          set -eu
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
+          git push --force origin "refs/tags/$RELEASE_TAG"
+
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+            signing_note="This build was Developer ID signed and notarized."
+            gatekeeper_note=""
+          else
+            signing_note="This build is ad-hoc signed and not notarized."
+            gatekeeper_note="On first launch, macOS may require Control-click -> Open or System Settings -> Privacy & Security -> Open Anyway."
+          fi
+
+          cat > "$notes_file" <<EOF
+          MEGAligner $VERSION macOS app built from \`$SHORT_SHA\`.
+
+          Download the zip below, unzip it, copy \`MEGAligner.app\` to \`/Applications\`, then open it from Finder.
+
+          $signing_note
+
+          $gatekeeper_note
+
+          First launch may download the Python runtime dependencies and language model into \`~/Library/Application Support/MEGAligner\`.
+          EOF
+
+          title="MEGAligner $VERSION for macOS"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "$title" \
+              --notes-file "$notes_file" \
+              --target "$GITHUB_SHA" \
+              --latest
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "$title" \
+              --notes-file "$notes_file" \
+              --target "$GITHUB_SHA" \
+              --latest
+          fi
+
+          gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[] | select(.name | test("^MEGAligner-.*-macos-.*\\.zip$")) | .id' \
+            | while read -r asset_id; do
+                [ -n "$asset_id" ] || continue
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+              done
+
+          gh release upload "$RELEASE_TAG" "$ZIP_PATH"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import json
+import os
 import sys
 import time
 import traceback
@@ -26,6 +28,26 @@ _WORKER_CONFIG: RunConfig | None = None
 
 def print_status(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def events_enabled() -> bool:
+    return os.environ.get("MEGALIGNER_EVENTS", "").lower() in {"1", "true", "yes"}
+
+
+def emit_event(event: dict[str, Any]) -> None:
+    print("MEGALIGNER_EVENT " + json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+def emit_progress_event(stage: str, current: int, total: int, label: str) -> None:
+    emit_event(
+        {
+            "type": "progress",
+            "stage": stage,
+            "current": current,
+            "total": total,
+            "label": label,
+        }
+    )
 
 
 @dataclass
@@ -411,8 +433,9 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
     all_units: list[AlignmentUnit] = []
     results_by_index: list[PairResult | None] = [None] * len(discovery.jobs)
     prepared_pairs: list[PreparedCombinedPair] = []
+    emit_events = events_enabled()
 
-    with tqdm(total=len(discovery.jobs), unit="pair", desc="Preparing", disable=not sys.stderr.isatty()) as progress:
+    with tqdm(total=len(discovery.jobs), unit="pair", desc="Preparing", disable=emit_events or not sys.stderr.isatty()) as progress:
         for index, job in enumerate(discovery.jobs):
             try:
                 pair_windows, timings = prepare_pair_windows(job.src_path, job.tgt_path, config)
@@ -435,6 +458,8 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
             status = "failed" if results_by_index[index] is not None else "prepared"
             progress.set_postfix_str(f"{status} {job.stem}")
             progress.update(1)
+            if emit_events:
+                emit_progress_event("Preparing", index + 1, len(discovery.jobs), f"{status} {job.stem}")
             if config.verbosity >= 1 and results_by_index[index] is not None:
                 tqdm.write(format_pair_result(results_by_index[index]), file=sys.stderr)
 
@@ -466,8 +491,8 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
         print_status("Starting pair alignment with per-pair embedding.")
     global_duplicate_window_texts = total_window_texts - len(unique_texts)
 
-    with tqdm(total=len(prepared_pairs), unit="pair", desc="Aligning", disable=not sys.stderr.isatty()) as progress:
-        for prepared in prepared_pairs:
+    with tqdm(total=len(prepared_pairs), unit="pair", desc="Aligning", disable=emit_events or not sys.stderr.isatty()) as progress:
+        for aligned_index, prepared in enumerate(prepared_pairs, start=1):
             try:
                 result, units = align_prepared_pair(
                     prepared,
@@ -489,6 +514,8 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
             results_by_index[prepared.index] = result
             progress.set_postfix_str(f"{result.status} {result.stem}")
             progress.update(1)
+            if emit_events:
+                emit_progress_event("Aligning", aligned_index, len(prepared_pairs), f"{result.status} {result.stem}")
             if config.verbosity >= 1:
                 tqdm.write(format_pair_result(result), file=sys.stderr)
 
