@@ -80,8 +80,13 @@ def write_combined_report(
                 "duplicate_units": result.duplicate_units,
                 "empty_units": result.empty_units,
                 "normalized_units": result.normalized_units,
+                "trivial_numeric_units": result.trivial_numeric_units,
                 "src_segments": result.src_segments,
                 "tgt_segments": result.tgt_segments,
+                "src_windows": result.src_windows,
+                "tgt_windows": result.tgt_windows,
+                "duplicate_window_texts": result.duplicate_window_texts,
+                "dp_full_retries": result.dp_full_retries,
                 "reason": result.reason,
             }
             for result in sorted(results, key=lambda item: item.stem.lower())
@@ -106,5 +111,6 @@ def write_combined_report(
             "duplicate_units": tmx_stats.duplicate_units,
             "empty_units": tmx_stats.empty_units,
             "normalized_units": tmx_stats.normalized_units,
+            "trivial_numeric_units": tmx_stats.trivial_numeric_units,
         }
     report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

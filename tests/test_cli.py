@@ -49,6 +49,18 @@ class CliTests(unittest.TestCase):
 
         self.assertIsNone(config.min_similarity)
 
+    def test_keep_trivial_numeric_units_flag(self) -> None:
+        args = parse_args(["documents", "out", "--keep-trivial-numeric-units"])
+        config = make_config(args)
+
+        self.assertTrue(config.keep_trivial_numeric_units)
+
+    def test_similarity_matrix_memory_guard_flag(self) -> None:
+        args = parse_args(["documents", "out", "--similarity-matrix-max-mb", "0"])
+        config = make_config(args)
+
+        self.assertEqual(config.similarity_matrix_max_mb, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

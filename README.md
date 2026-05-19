@@ -87,6 +87,7 @@ make align DIR=/corpus OUT=/tmx/result.tmx WORKERS=2
 make align DIR=/corpus OUT=/tmx/result.tmx PROFILE=1
 make align DIR=/corpus OUT=/tmx/result.tmx ALIGN_ARGS="--min-similarity 0.55"
 make align DIR=/corpus OUT=/tmx/result.tmx ALIGN_ARGS="--no-similarity-filter"
+make align DIR=/corpus OUT=/tmx/result.tmx ALIGN_ARGS="--keep-trivial-numeric-units"
 make align DIR=/corpus OUT=/tmx/result.tmx ALIGN_ARGS="--src-lang en --tgt-lang ru --pattern auto"
 ```
 
@@ -94,15 +95,24 @@ make align DIR=/corpus OUT=/tmx/result.tmx ALIGN_ARGS="--src-lang en --tgt-lang 
 
 ## Output Quality
 
-MEGAligner prepares the TMX as a translation memory, not as a raw dump of every aligned row. Before writing the file, it trims and normalizes whitespace, removes exact duplicate English/Russian segment pairs, skips empty entries, and filters very low-similarity alignments by default.
+MEGAligner prepares the TMX as a translation memory, not as a raw dump of every aligned row. Before writing the file, it trims and normalizes whitespace, removes exact duplicate English/Russian segment pairs, skips empty entries, skips standalone numeric-only pairs such as `182.22 -> 182,22`, and filters very low-similarity alignments by default.
 
-The default similarity threshold is `0.45`, which removes obvious mismatches while keeping normal sentence and table alignments. To be stricter, pass for example `ALIGN_ARGS="--min-similarity 0.55"`. To export everything, pass `ALIGN_ARGS="--no-similarity-filter"`.
+The default similarity threshold is `0.45`, which removes obvious mismatches while keeping normal sentence and table alignments. To be stricter, pass for example `ALIGN_ARGS="--min-similarity 0.55"`. To keep low-similarity entries, pass `ALIGN_ARGS="--no-similarity-filter"`. To keep standalone numeric-only entries, pass `ALIGN_ARGS="--keep-trivial-numeric-units"`.
 
 This default was checked against a small Multilateral Fund 97th Meeting EN/RU sample using LaBSE scores and shuffled-target negative controls. In that sample, `0.45` removed about 1 percent of aligned units; the lowest removed examples were document-code/date and front-matter mismatches. Raising the threshold to `0.55` removed more false positives but also started dropping useful short table labels such as `Background`, `Other`, and `Description`.
 
 For combined TMX output, exact duplicates are kept once across the whole corpus. That is usually what translators want from a translation memory, but it means the final TMX is not a document-by-document provenance record.
 
 At the end of a run, the `TMX output` summary is the authoritative final count. It reports how many low-similarity units were filtered, how many duplicates were removed, and how many translation units were written.
+
+MEGAligner also writes QA side reports next to the TMX file. For `aligned.tmx`, the reports are:
+
+```text
+aligned.tmx.qa.txt
+aligned.tmx.qa.json
+```
+
+The text report is meant for quick review. It highlights suspicious-but-not-automatically-wrong units, such as numeric mismatches, very short/long alignments, identical source/target text, and low-similarity samples. The same compact QA summary is printed at the end of the run. MEGAligner does not remove those highlighted units from the TMX.
 
 ## Supported Naming Schemes
 

@@ -10,6 +10,7 @@ from docx_bitext_aligner.config import (
     DEFAULT_MIN_SIMILARITY,
     DEFAULT_MODEL,
     DEFAULT_SAMPLE_SIZE,
+    DEFAULT_SIMILARITY_MATRIX_MAX_MB,
     DEFAULT_SRC_LANG,
     DEFAULT_TGT_LANG,
     TOOL_NAME,
@@ -66,7 +67,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Embedding batch size")
     parser.add_argument("--max-group", type=int, default=DEFAULT_MAX_GROUP, help="Maximum m or n size for grouped alignments")
     parser.add_argument("--band", type=int, default=None, help="Alignment band width. Use 0 for full matrix")
+    parser.add_argument(
+        "--similarity-matrix-max-mb",
+        type=int,
+        default=DEFAULT_SIMILARITY_MATRIX_MAX_MB,
+        help=f"Maximum per-pair similarity matrix size in MB; 0 disables precompute, default {DEFAULT_SIMILARITY_MATRIX_MAX_MB}",
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto", help="Embedding device")
+    parser.add_argument(
+        "--keep-trivial-numeric-units",
+        action="store_true",
+        help="Keep standalone numeric-only translation units such as 182.22 -> 182,22",
+    )
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     return parser.parse_args(argv)
 
@@ -91,6 +103,8 @@ def make_config(args: argparse.Namespace) -> RunConfig:
         batch_size=args.batch_size,
         max_group=args.max_group,
         band=args.band,
+        keep_trivial_numeric_units=args.keep_trivial_numeric_units,
+        similarity_matrix_max_mb=args.similarity_matrix_max_mb,
     )
     validate_config(config)
     return config

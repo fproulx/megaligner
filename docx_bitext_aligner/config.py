@@ -17,6 +17,7 @@ DEFAULT_GROUP_PENALTY = 0.06
 DEFAULT_CREATION_DATE = "19700101T000000Z"
 DEFAULT_SAMPLE_SIZE = 12
 DEFAULT_MIN_SIMILARITY = 0.45
+DEFAULT_SIMILARITY_MATRIX_MAX_MB = 512
 
 
 class PairProcessingError(RuntimeError):
@@ -50,6 +51,8 @@ class RunConfig:
     group_penalty: float = DEFAULT_GROUP_PENALTY
     creationdate: str = DEFAULT_CREATION_DATE
     band: Optional[int] = None
+    keep_trivial_numeric_units: bool = False
+    similarity_matrix_max_mb: int = DEFAULT_SIMILARITY_MATRIX_MAX_MB
 
 
 def default_workers() -> int:
@@ -64,6 +67,8 @@ def validate_config(config: RunConfig) -> None:
         raise ValueError("--max-group must be at least 1")
     if config.batch_size < 1:
         raise ValueError("--batch-size must be at least 1")
+    if config.similarity_matrix_max_mb < 0:
+        raise ValueError("--similarity-matrix-max-mb must be zero or greater")
     if config.sample_size < 0:
         raise ValueError("--sample-size must be at least 0")
     if config.min_similarity is not None and not (-1.0 <= config.min_similarity <= 1.0):

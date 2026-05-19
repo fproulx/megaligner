@@ -40,10 +40,36 @@ class TmxPreparationTests(unittest.TestCase):
         self.assertEqual(stats.duplicate_units, 2)
         self.assertEqual(stats.empty_units, 1)
         self.assertEqual(stats.normalized_units, 2)
+        self.assertEqual(stats.trivial_numeric_units, 0)
         self.assertEqual(prepared[0].src_text, "Hello world")
         self.assertEqual(prepared[0].tgt_text, "Привет мир")
         self.assertEqual(prepared[0].similarity, 0.91)
         self.assertEqual(prepared[0].tuid, "better")
+
+    def test_prepare_tmx_units_skips_standalone_numeric_pairs_by_default(self) -> None:
+        prepared, stats = prepare_tmx_units(
+            [
+                unit("182.22", "182,22", 0.95, "decimal"),
+                unit("$10,220", "10 220", 0.90, "money"),
+                unit("Table 3", "Таблица 3", 0.80, "text-bearing"),
+                unit("III.", "III. Раздел", 0.80, "roman"),
+            ]
+        )
+
+        self.assertEqual(stats.input_units, 4)
+        self.assertEqual(stats.written_units, 2)
+        self.assertEqual(stats.trivial_numeric_units, 2)
+        self.assertEqual([item.tuid for item in prepared], ["text-bearing", "roman"])
+
+    def test_prepare_tmx_units_can_keep_standalone_numeric_pairs(self) -> None:
+        prepared, stats = prepare_tmx_units(
+            [unit("182.22", "182,22", 0.95, "decimal")],
+            keep_trivial_numeric_units=True,
+        )
+
+        self.assertEqual(stats.written_units, 1)
+        self.assertEqual(stats.trivial_numeric_units, 0)
+        self.assertEqual(prepared[0].tuid, "decimal")
 
     def test_write_tmx_returns_written_units_and_stats(self) -> None:
         try:

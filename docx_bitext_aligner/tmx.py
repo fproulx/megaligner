@@ -8,7 +8,7 @@ from typing import Any
 from docx_bitext_aligner import __version__
 from docx_bitext_aligner.config import PairProcessingError, RunConfig
 from docx_bitext_aligner.models import AlignmentUnit
-from docx_bitext_aligner.utils import normalize_space
+from docx_bitext_aligner.utils import is_numericish_text, normalize_space
 
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 TMX_DOCTYPE = '<!DOCTYPE tmx SYSTEM "tmx14.dtd">'
@@ -22,6 +22,7 @@ class TmxWriteStats:
     duplicate_units: int = 0
     empty_units: int = 0
     normalized_units: int = 0
+    trivial_numeric_units: int = 0
 
 
 @dataclass(frozen=True)
@@ -87,12 +88,21 @@ def normalized_alignment_unit(unit: AlignmentUnit) -> AlignmentUnit:
     )
 
 
-def prepare_tmx_units(units: list[AlignmentUnit]) -> tuple[list[AlignmentUnit], TmxWriteStats]:
+def is_trivial_numeric_unit(unit: AlignmentUnit) -> bool:
+    return is_numericish_text(unit.src_text) and is_numericish_text(unit.tgt_text)
+
+
+def prepare_tmx_units(
+    units: list[AlignmentUnit],
+    *,
+    keep_trivial_numeric_units: bool = False,
+) -> tuple[list[AlignmentUnit], TmxWriteStats]:
     prepared: list[AlignmentUnit] = []
     seen: dict[tuple[str, str], int] = {}
     duplicate_units = 0
     empty_units = 0
     normalized_units = 0
+    trivial_numeric_units = 0
 
     for unit in units:
         normalized = normalized_alignment_unit(unit)
@@ -100,6 +110,9 @@ def prepare_tmx_units(units: list[AlignmentUnit]) -> tuple[list[AlignmentUnit], 
             normalized_units += 1
         if not normalized.src_text or not normalized.tgt_text:
             empty_units += 1
+            continue
+        if not keep_trivial_numeric_units and is_trivial_numeric_unit(normalized):
+            trivial_numeric_units += 1
             continue
 
         key = (normalized.src_text, normalized.tgt_text)
@@ -119,6 +132,7 @@ def prepare_tmx_units(units: list[AlignmentUnit]) -> tuple[list[AlignmentUnit], 
         duplicate_units=duplicate_units,
         empty_units=empty_units,
         normalized_units=normalized_units,
+        trivial_numeric_units=trivial_numeric_units,
     )
     return prepared, stats
 
@@ -181,7 +195,10 @@ def validate_tmx_tree(tree: Any) -> None:
 
 
 def write_tmx(units: list[AlignmentUnit], out_path: Path, config: RunConfig) -> TmxWriteResult:
-    prepared_units, stats = prepare_tmx_units(units)
+    prepared_units, stats = prepare_tmx_units(
+        units,
+        keep_trivial_numeric_units=config.keep_trivial_numeric_units,
+    )
     if not prepared_units:
         raise PairProcessingError("TMX output has no usable translation units")
 

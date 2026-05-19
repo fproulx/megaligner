@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from docx_bitext_aligner.alignment import band_range, choose_band, make_tuid, make_windows
+from docx_bitext_aligner.alignment import (
+    band_range,
+    choose_band,
+    count_duplicate_window_texts,
+    make_tuid,
+    make_windows,
+    precompute_similarity_matrix,
+)
 from docx_bitext_aligner.models import Segment
 
 
@@ -23,6 +30,32 @@ class AlignmentUtilityTests(unittest.TestCase):
         self.assertEqual([window.text for window in windows], ["First.", "First. Second.", "Second.", "Third."])
         self.assertIn((0, 2), lookup)
         self.assertNotIn((1, 2), lookup)
+
+    def test_count_duplicate_window_texts_counts_repeated_exact_text(self) -> None:
+        segments = [
+            segment("Repeat.", 0, 0),
+            segment("Repeat.", 1, 1),
+            segment("Unique.", 2, 2),
+        ]
+
+        windows, _ = make_windows(segments, max_group=1)
+
+        self.assertEqual(count_duplicate_window_texts(windows), 1)
+
+    def test_precompute_similarity_matrix_respects_memory_guard(self) -> None:
+        try:
+            import numpy as np
+        except Exception as exc:
+            self.skipTest(f"numpy is not installed: {exc}")
+
+        src = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        tgt = np.asarray([[1.0, 0.0], [1.0, 1.0]], dtype=np.float32)
+
+        self.assertIsNone(precompute_similarity_matrix(src, tgt, max_mb=0))
+        similarities = precompute_similarity_matrix(src, tgt, max_mb=1)
+
+        self.assertIsNotNone(similarities)
+        self.assertEqual(similarities.tolist(), [[1.0, 1.0], [0.0, 1.0]])
 
     def test_band_range_is_clamped(self) -> None:
         self.assertEqual(band_range(i=5, n=10, m=20, band=3), (7, 13))

@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import math
 import time
+from collections import Counter
 from typing import Any, Optional
 
 from docx_bitext_aligner.config import PairProcessingError, RunConfig
 from docx_bitext_aligner.embedding import encode_texts
 from docx_bitext_aligner.models import AlignmentUnit, BackPointer, Segment, SegmentWindow
 from docx_bitext_aligner.utils import normalize_space, safe_stem_for_tuid, timed_call
+
+FLOAT32_BYTES = 4
 
 
 def make_windows(segments: list[Segment], max_group: int) -> tuple[list[SegmentWindow], dict[tuple[int, int], SegmentWindow]]:
@@ -63,7 +66,36 @@ def get_score(dp: list[dict[int, float]], i: int, j: int) -> float:
     return dp[i].get(j, -math.inf)
 
 
-def cosine_similarity(src_vectors: Any, tgt_vectors: Any, src_index: int, tgt_index: int) -> float:
+def count_duplicate_window_texts(windows: list[SegmentWindow]) -> int:
+    counts = Counter(window.text for window in windows)
+    return sum(count - 1 for count in counts.values() if count > 1)
+
+
+def similarity_matrix_size_bytes(src_count: int, tgt_count: int) -> int:
+    return src_count * tgt_count * FLOAT32_BYTES
+
+
+def precompute_similarity_matrix(src_vectors: Any, tgt_vectors: Any, max_mb: int) -> Any | None:
+    import numpy as np
+
+    if max_mb <= 0:
+        return None
+    size_bytes = similarity_matrix_size_bytes(len(src_vectors), len(tgt_vectors))
+    if size_bytes > max_mb * 1024 * 1024:
+        return None
+    return np.asarray(src_vectors, dtype=np.float32) @ np.asarray(tgt_vectors, dtype=np.float32).T
+
+
+def cosine_similarity(
+    src_vectors: Any,
+    tgt_vectors: Any,
+    src_index: int,
+    tgt_index: int,
+    similarities: Any | None = None,
+) -> float:
+    if similarities is not None:
+        return float(similarities[src_index, tgt_index])
+
     import numpy as np
 
     return float(np.dot(src_vectors[src_index], tgt_vectors[tgt_index]))
@@ -76,6 +108,7 @@ def run_alignment_dp(
     tgt_window_lookup: dict[tuple[int, int], SegmentWindow],
     src_vectors: Any,
     tgt_vectors: Any,
+    similarities: Any | None,
     config: RunConfig,
     band: Optional[int],
 ) -> list[AlignmentUnit]:
@@ -130,6 +163,7 @@ def run_alignment_dp(
                         tgt_vectors,
                         src_window.vector_index,
                         tgt_window.vector_index,
+                        similarities,
                     )
                     transition = similarity - config.group_penalty * (src_len + tgt_len - 2)
                     score = previous + transition
@@ -171,17 +205,7 @@ def run_alignment_dp(
                 score=pointer.score,
                 src_text=src_text,
                 tgt_text=tgt_text,
-                tuid=make_tuid(
-                    stem="",
-                    src_lang=config.src_lang,
-                    tgt_lang=config.tgt_lang,
-                    src_start=pointer.prev_i,
-                    src_len=pointer.src_len,
-                    tgt_start=pointer.prev_j,
-                    tgt_len=pointer.tgt_len,
-                    src_text=src_text,
-                    tgt_text=tgt_text,
-                ),
+                tuid="",
             )
         )
     return units
@@ -193,7 +217,7 @@ def align_segments(
     stem: str,
     model: Any,
     config: RunConfig,
-) -> tuple[list[AlignmentUnit], int, dict[str, float], int, int]:
+) -> tuple[list[AlignmentUnit], int, dict[str, float], int, int, int, int]:
     if not src_segments:
         raise PairProcessingError("Source document produced zero sentence segments")
     if not tgt_segments:
@@ -202,6 +226,7 @@ def align_segments(
     timings: dict[str, float] = {}
     src_windows, src_lookup = timed_call(timings, "src_windows", make_windows, src_segments, config.max_group)
     tgt_windows, tgt_lookup = timed_call(timings, "tgt_windows", make_windows, tgt_segments, config.max_group)
+    duplicate_window_texts = count_duplicate_window_texts([*src_windows, *tgt_windows])
     src_window_count = len(src_windows)
     vectors = timed_call(
         timings,
@@ -213,8 +238,17 @@ def align_segments(
     )
     src_vectors = vectors[:src_window_count]
     tgt_vectors = vectors[src_window_count:]
+    similarities = timed_call(
+        timings,
+        "similarity_matrix",
+        precompute_similarity_matrix,
+        src_vectors,
+        tgt_vectors,
+        config.similarity_matrix_max_mb,
+    )
 
     band = choose_band(len(src_segments), len(tgt_segments), config.band)
+    dp_full_retries = 0
     try:
         units = timed_call(
             timings,
@@ -226,11 +260,13 @@ def align_segments(
             tgt_lookup,
             src_vectors,
             tgt_vectors,
+            similarities,
             config,
             band,
         )
     except PairProcessingError:
         if band is not None and config.band is None:
+            dp_full_retries = 1
             units = timed_call(
                 timings,
                 "dp_full_retry",
@@ -241,6 +277,7 @@ def align_segments(
                 tgt_lookup,
                 src_vectors,
                 tgt_vectors,
+                similarities,
                 config,
                 None,
             )
@@ -284,7 +321,7 @@ def align_segments(
 
     if not stable_units:
         raise PairProcessingError("Alignment produced zero usable translation units")
-    return stable_units, dropped, timings, len(src_windows), len(tgt_windows)
+    return stable_units, dropped, timings, len(src_windows), len(tgt_windows), duplicate_window_texts, dp_full_retries
 
 
 def make_tuid(

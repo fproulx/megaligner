@@ -14,6 +14,7 @@ from docx_bitext_aligner.config import PairProcessingError, RunConfig
 from docx_bitext_aligner.discovery import DiscoveryResult, PairJob, discover_pairs
 from docx_bitext_aligner.embedding import load_embedding_model
 from docx_bitext_aligner.models import AlignmentUnit, PairAlignment, PairResult
+from docx_bitext_aligner.qa import QaReportResult, format_qa_console_summary, write_qa_report
 from docx_bitext_aligner.reports import write_combined_report, write_report
 from docx_bitext_aligner.text import extract_docx_paragraphs, segment_paragraphs
 from docx_bitext_aligner.tmx import TmxWriteStats, write_tmx
@@ -46,7 +47,15 @@ def align_pair(
 
     src_segments = timed_call(timings, "src_segment", segment_paragraphs, src_paragraphs, config.src_lang)
     tgt_segments = timed_call(timings, "tgt_segment", segment_paragraphs, tgt_paragraphs, config.tgt_lang)
-    units, dropped, segment_timings, src_windows, tgt_windows = align_segments(src_segments, tgt_segments, stem, model, config)
+    (
+        units,
+        dropped,
+        segment_timings,
+        src_windows,
+        tgt_windows,
+        duplicate_window_texts,
+        dp_full_retries,
+    ) = align_segments(src_segments, tgt_segments, stem, model, config)
     timings.update(segment_timings)
     timings["total"] = time.perf_counter() - total_started
     return PairAlignment(
@@ -56,6 +65,8 @@ def align_pair(
         tgt_segments=tgt_segments,
         src_windows=src_windows,
         tgt_windows=tgt_windows,
+        duplicate_window_texts=duplicate_window_texts,
+        dp_full_retries=dp_full_retries,
         timings=timings,
     )
 
@@ -79,6 +90,7 @@ def align_one_pair(
     timings = dict(alignment.timings)
     write_result = timed_call(timings, "write_tmx", write_tmx, alignment.units, out_path, config)
     write_stats = write_result.stats
+    qa_result = timed_call(timings, "write_qa_report", write_qa_report, out_path, write_result.units, config)
     if config.report:
         timed_call(
             timings,
@@ -104,10 +116,16 @@ def align_one_pair(
         duplicate_units=write_stats.duplicate_units,
         empty_units=write_stats.empty_units,
         normalized_units=write_stats.normalized_units,
+        trivial_numeric_units=write_stats.trivial_numeric_units,
         src_segments=len(alignment.src_segments),
         tgt_segments=len(alignment.tgt_segments),
         src_windows=alignment.src_windows,
         tgt_windows=alignment.tgt_windows,
+        duplicate_window_texts=alignment.duplicate_window_texts,
+        dp_full_retries=alignment.dp_full_retries,
+        qa_json_path=qa_result.json_path,
+        qa_text_path=qa_result.text_path,
+        qa_summary=qa_result.summary,
         timings=timings,
     )
 
@@ -151,6 +169,9 @@ def run_single_pair(args: argparse.Namespace, config: RunConfig) -> int:
             print(traceback.format_exc(), file=sys.stderr)
         return 1
     print(format_pair_result(result))
+    qa_summary = format_pair_qa_summary(result)
+    if qa_summary:
+        print(qa_summary)
     if config.profile:
         print_profile([result])
     return 0
@@ -272,6 +293,8 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
                     tgt_segments=len(alignment.tgt_segments),
                     src_windows=alignment.src_windows,
                     tgt_windows=alignment.tgt_windows,
+                    duplicate_window_texts=alignment.duplicate_window_texts,
+                    dp_full_retries=alignment.dp_full_retries,
                     timings=alignment.timings,
                 )
             except Exception as exc:
@@ -301,6 +324,7 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
     combined_timings: dict[str, float] = {}
     write_result = timed_call(combined_timings, "write_combined_tmx", write_tmx, all_units, output_path, config)
     write_stats = write_result.stats
+    qa_result = timed_call(combined_timings, "write_qa_report", write_qa_report, output_path, write_result.units, config)
     if config.report:
         timed_call(
             combined_timings,
@@ -314,6 +338,7 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
         )
     print_summary(results, discovery)
     print_tmx_write_stats(write_stats)
+    print(format_qa_console_summary(qa_result))
     if config.profile:
         print_profile(results, combined_timings)
     print(f"Combined TMX: {output_path}")
@@ -451,10 +476,24 @@ def format_pair_result(result: PairResult) -> str:
             message += f", duplicates removed={result.duplicate_units}"
         if result.empty_units:
             message += f", empty skipped={result.empty_units}"
+        if result.trivial_numeric_units:
+            message += f", trivial numeric skipped={result.trivial_numeric_units}"
         return message
     if result.status == "skipped":
         return f"SKIPPED {result.stem}: {result.reason or 'not processed'}"
     return f"FAILED {result.stem}: {result.reason or 'unknown error'}"
+
+
+def format_pair_qa_summary(result: PairResult) -> str | None:
+    if result.status != "succeeded" or not result.qa_json_path or not result.qa_text_path or not result.qa_summary:
+        return None
+    return format_qa_console_summary(
+        QaReportResult(
+            json_path=result.qa_json_path,
+            text_path=result.qa_text_path,
+            summary=result.qa_summary,
+        )
+    )
 
 
 def print_summary(results: list[PairResult], discovery: DiscoveryResult) -> None:
@@ -479,6 +518,9 @@ def print_summary(results: list[PairResult], discovery: DiscoveryResult) -> None
     empty_units = sum(result.empty_units for result in succeeded)
     if empty_units:
         print(f"  empty units skipped: {empty_units}")
+    trivial_numeric_units = sum(result.trivial_numeric_units for result in succeeded)
+    if trivial_numeric_units:
+        print(f"  trivial numeric units skipped: {trivial_numeric_units}")
     if failed:
         print("Failures")
         for result in failed:
@@ -499,6 +541,8 @@ def print_tmx_write_stats(stats: TmxWriteStats) -> None:
         print(f"  empty units skipped: {stats.empty_units}")
     if stats.normalized_units:
         print(f"  whitespace-normalized units: {stats.normalized_units}")
+    if stats.trivial_numeric_units:
+        print(f"  trivial numeric units skipped: {stats.trivial_numeric_units}")
 
 
 def print_profile(results: list[PairResult], extra_timings: Optional[dict[str, float]] = None) -> None:
@@ -514,10 +558,12 @@ def print_profile(results: list[PairResult], extra_timings: Optional[dict[str, f
         "src_windows",
         "tgt_windows",
         "encode",
+        "similarity_matrix",
         "dp",
         "dp_full_retry",
         "postprocess",
         "write_tmx",
+        "write_qa_report",
     ]
     totals = {key: sum(result.timings.get(key, 0.0) for result in succeeded) for key in profile_keys}
     pair_total = sum(result.timings.get("total", 0.0) for result in succeeded)
@@ -526,6 +572,12 @@ def print_profile(results: list[PairResult], extra_timings: Optional[dict[str, f
     print(f"  pair time average: {format_duration(pair_total / len(succeeded))}")
     print(f"  src/tgt segments: {sum(result.src_segments for result in succeeded)} / {sum(result.tgt_segments for result in succeeded)}")
     print(f"  src/tgt windows: {sum(result.src_windows for result in succeeded)} / {sum(result.tgt_windows for result in succeeded)}")
+    duplicate_window_texts = sum(result.duplicate_window_texts for result in succeeded)
+    if duplicate_window_texts:
+        print(f"  duplicate window texts: {duplicate_window_texts}")
+    dp_full_retries = sum(result.dp_full_retries for result in succeeded)
+    if dp_full_retries:
+        print(f"  full DP retries after band miss: {dp_full_retries}")
     for key in profile_keys:
         if totals[key] > 0:
             print(f"  {key}: {format_duration(totals[key])}")

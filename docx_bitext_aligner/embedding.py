@@ -77,11 +77,25 @@ def encode_texts(model: Any, texts: list[str], batch_size: int) -> Any:
 
     if not texts:
         return np.empty((0, 0), dtype=np.float32)
+    unique_texts: list[str] = []
+    unique_indexes: list[int] = []
+    seen: dict[str, int] = {}
+    for text in texts:
+        index = seen.get(text)
+        if index is None:
+            index = len(unique_texts)
+            seen[text] = index
+            unique_texts.append(text)
+        unique_indexes.append(index)
+
     vectors = model.encode(
-        texts,
+        unique_texts,
         batch_size=batch_size,
         convert_to_numpy=True,
         normalize_embeddings=True,
         show_progress_bar=False,
     )
-    return np.asarray(vectors, dtype=np.float32)
+    unique_vectors = np.asarray(vectors, dtype=np.float32)
+    if len(unique_texts) == len(texts):
+        return unique_vectors
+    return unique_vectors[np.asarray(unique_indexes, dtype=np.int64)]

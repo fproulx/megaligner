@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import warnings
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from docx_bitext_aligner.models import Segment
 from docx_bitext_aligner.utils import normalize_space
@@ -60,19 +61,30 @@ def extract_docx_paragraphs(path: Path) -> list[str]:
     return paragraphs
 
 
-def split_sentences(paragraph: str, lang: str) -> list[str]:
-    lang_base = lang.lower().split("-")[0].split("_")[0]
-    if lang_base == "ru":
-        from razdel import sentenize
-
-        return [normalize_space(match.text) for match in sentenize(paragraph) if normalize_space(match.text)]
-
+@lru_cache(maxsize=None)
+def get_pysbd_segmenter(lang_base: str) -> Any:
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*invalid escape sequence.*", category=SyntaxWarning)
         import pysbd
 
-        segmenter = pysbd.Segmenter(language=lang_base, clean=False)
-        return [normalize_space(sentence) for sentence in segmenter.segment(paragraph) if normalize_space(sentence)]
+    return pysbd.Segmenter(language=lang_base, clean=False)
+
+
+@lru_cache(maxsize=1)
+def get_razdel_sentenize() -> Callable[[str], Any]:
+    from razdel import sentenize
+
+    return sentenize
+
+
+def split_sentences(paragraph: str, lang: str) -> list[str]:
+    lang_base = lang.lower().split("-")[0].split("_")[0]
+    if lang_base == "ru":
+        sentenize = get_razdel_sentenize()
+        return [normalize_space(match.text) for match in sentenize(paragraph) if normalize_space(match.text)]
+
+    segmenter = get_pysbd_segmenter(lang_base)
+    return [normalize_space(sentence) for sentence in segmenter.segment(paragraph) if normalize_space(sentence)]
 
 
 def segment_paragraphs(paragraphs: list[str], lang: str) -> list[Segment]:

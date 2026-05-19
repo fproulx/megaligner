@@ -46,11 +46,17 @@ class PairResult:
     duplicate_units: int = 0
     empty_units: int = 0
     normalized_units: int = 0
+    trivial_numeric_units: int = 0
     tmx_units_final: bool = True
     src_segments: int = 0
     tgt_segments: int = 0
     src_windows: int = 0
     tgt_windows: int = 0
+    duplicate_window_texts: int = 0
+    dp_full_retries: int = 0
+    qa_json_path: Optional[Path] = None
+    qa_text_path: Optional[Path] = None
+    qa_summary: dict[str, int] = field(default_factory=dict)
     reason: Optional[str] = None
     traceback_text: Optional[str] = None
     timings: dict[str, float] = field(default_factory=dict)
@@ -68,6 +74,8 @@ class PairAlignment:
     tgt_segments: list[Segment]
     src_windows: int
     tgt_windows: int
+    duplicate_window_texts: int
+    dp_full_retries: int
     timings: dict[str, float]
 
 
