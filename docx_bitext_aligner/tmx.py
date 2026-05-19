@@ -23,6 +23,7 @@ class TmxWriteStats:
     duplicate_units: int = 0
     empty_units: int = 0
     normalized_units: int = 0
+    identical_source_target_units: int = 0
     trivial_numeric_units: int = 0
 
 
@@ -93,6 +94,10 @@ def is_trivial_numeric_unit(unit: AlignmentUnit) -> bool:
     return is_numericish_text(unit.src_text) and is_numericish_text(unit.tgt_text)
 
 
+def is_identical_source_target_unit(unit: AlignmentUnit) -> bool:
+    return unit.src_text == unit.tgt_text
+
+
 def prepare_tmx_units(
     units: list[AlignmentUnit],
     *,
@@ -103,6 +108,7 @@ def prepare_tmx_units(
     duplicate_units = 0
     empty_units = 0
     normalized_units = 0
+    identical_source_target_units = 0
     trivial_numeric_units = 0
 
     for unit in units:
@@ -111,6 +117,9 @@ def prepare_tmx_units(
             normalized_units += 1
         if not normalized.src_text or not normalized.tgt_text:
             empty_units += 1
+            continue
+        if is_identical_source_target_unit(normalized):
+            identical_source_target_units += 1
             continue
         if not keep_trivial_numeric_units and is_trivial_numeric_unit(normalized):
             trivial_numeric_units += 1
@@ -133,6 +142,7 @@ def prepare_tmx_units(
         duplicate_units=duplicate_units,
         empty_units=empty_units,
         normalized_units=normalized_units,
+        identical_source_target_units=identical_source_target_units,
         trivial_numeric_units=trivial_numeric_units,
     )
     return prepared, stats

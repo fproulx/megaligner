@@ -171,6 +171,7 @@ def align_one_pair(
         duplicate_units=write_stats.duplicate_units,
         empty_units=write_stats.empty_units,
         normalized_units=write_stats.normalized_units,
+        identical_source_target_units=write_stats.identical_source_target_units,
         trivial_numeric_units=write_stats.trivial_numeric_units,
         src_segments=len(alignment.src_segments),
         tgt_segments=len(alignment.tgt_segments),
@@ -693,6 +694,8 @@ def format_pair_result(result: PairResult) -> str:
             message += f", duplicates removed={result.duplicate_units}"
         if result.empty_units:
             message += f", empty skipped={result.empty_units}"
+        if result.identical_source_target_units:
+            message += f", identical source/target skipped={result.identical_source_target_units}"
         if result.trivial_numeric_units:
             message += f", trivial numeric skipped={result.trivial_numeric_units}"
         return message
@@ -735,6 +738,9 @@ def print_summary(results: list[PairResult], discovery: DiscoveryResult) -> None
     empty_units = sum(result.empty_units for result in succeeded)
     if empty_units:
         print(f"  empty units skipped: {empty_units}")
+    identical_source_target_units = sum(result.identical_source_target_units for result in succeeded)
+    if identical_source_target_units:
+        print(f"  identical source/target units skipped: {identical_source_target_units}")
     trivial_numeric_units = sum(result.trivial_numeric_units for result in succeeded)
     if trivial_numeric_units:
         print(f"  trivial numeric units skipped: {trivial_numeric_units}")
@@ -758,6 +764,8 @@ def print_tmx_write_stats(stats: TmxWriteStats) -> None:
         print(f"  empty units skipped: {stats.empty_units}")
     if stats.normalized_units:
         print(f"  whitespace-normalized units: {stats.normalized_units}")
+    if stats.identical_source_target_units:
+        print(f"  identical source/target units skipped: {stats.identical_source_target_units}")
     if stats.trivial_numeric_units:
         print(f"  trivial numeric units skipped: {stats.trivial_numeric_units}")
 

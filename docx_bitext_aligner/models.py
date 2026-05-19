@@ -46,6 +46,7 @@ class PairResult:
     duplicate_units: int = 0
     empty_units: int = 0
     normalized_units: int = 0
+    identical_source_target_units: int = 0
     trivial_numeric_units: int = 0
     tmx_units_final: bool = True
     src_segments: int = 0

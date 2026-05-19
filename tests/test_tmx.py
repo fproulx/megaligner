@@ -40,6 +40,7 @@ class TmxPreparationTests(unittest.TestCase):
         self.assertEqual(stats.duplicate_units, 2)
         self.assertEqual(stats.empty_units, 1)
         self.assertEqual(stats.normalized_units, 2)
+        self.assertEqual(stats.identical_source_target_units, 0)
         self.assertEqual(stats.trivial_numeric_units, 0)
         self.assertEqual(prepared[0].src_text, "Hello world")
         self.assertEqual(prepared[0].tgt_text, "Привет мир")
@@ -59,6 +60,22 @@ class TmxPreparationTests(unittest.TestCase):
         self.assertEqual(stats.duplicate_units, 1)
         self.assertEqual(prepared[0].tuid, "first")
         self.assertEqual(prepared[0].similarity, 0.910000)
+
+    def test_prepare_tmx_units_skips_identical_source_target_pairs(self) -> None:
+        prepared, stats = prepare_tmx_units(
+            [
+                unit("UNEP", "UNEP", 0.99, "identical"),
+                unit("  Same   text ", "Same text", 0.98, "identical-after-normalization"),
+                unit("182.22", "182.22", 0.95, "identical-numeric"),
+                unit("UNEP", "ЮНЕП", 0.90, "translated"),
+            ]
+        )
+
+        self.assertEqual(stats.input_units, 4)
+        self.assertEqual(stats.written_units, 1)
+        self.assertEqual(stats.identical_source_target_units, 3)
+        self.assertEqual(stats.trivial_numeric_units, 0)
+        self.assertEqual([item.tuid for item in prepared], ["translated"])
 
     def test_prepare_tmx_units_skips_standalone_numeric_pairs_by_default(self) -> None:
         prepared, stats = prepare_tmx_units(

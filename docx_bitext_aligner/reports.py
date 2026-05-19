@@ -80,6 +80,7 @@ def write_combined_report(
                 "duplicate_units": result.duplicate_units,
                 "empty_units": result.empty_units,
                 "normalized_units": result.normalized_units,
+                "identical_source_target_units": result.identical_source_target_units,
                 "trivial_numeric_units": result.trivial_numeric_units,
                 "src_segments": result.src_segments,
                 "tgt_segments": result.tgt_segments,
@@ -111,6 +112,7 @@ def write_combined_report(
             "duplicate_units": tmx_stats.duplicate_units,
             "empty_units": tmx_stats.empty_units,
             "normalized_units": tmx_stats.normalized_units,
+            "identical_source_target_units": tmx_stats.identical_source_target_units,
             "trivial_numeric_units": tmx_stats.trivial_numeric_units,
         }
     report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
