@@ -1,0 +1,37 @@
+[project]
+name = "docx-bitext-aligner"
+version = "0.2.0"
+description = "Sentence-level TMX alignment for paired DOCX bitext corpora."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "lxml==6.1.0",
+    "numpy==2.4.5",
+    "pysbd==0.3.4",
+    "python-docx==1.2.0",
+    "razdel==0.5.0",
+    "sentence-transformers==5.5.0",
+    "torch==2.12.0",
+    "tqdm==4.67.3",
+]
+
+[project.scripts]
+align-docx = "docx_bitext_aligner.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["docx_bitext_aligner*"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
