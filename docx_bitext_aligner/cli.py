@@ -6,6 +6,7 @@ from typing import Optional
 
 from docx_bitext_aligner.config import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_GLOBAL_EMBEDDING_MAX_MB,
     DEFAULT_MAX_GROUP,
     DEFAULT_MIN_SIMILARITY,
     DEFAULT_MODEL,
@@ -73,6 +74,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=DEFAULT_SIMILARITY_MATRIX_MAX_MB,
         help=f"Maximum per-pair similarity matrix size in MB; 0 disables precompute, default {DEFAULT_SIMILARITY_MATRIX_MAX_MB}",
     )
+    parser.add_argument(
+        "--global-embedding-max-mb",
+        type=int,
+        default=DEFAULT_GLOBAL_EMBEDDING_MAX_MB,
+        help=(
+            "Maximum combined-mode global embedding vector cache in MB; "
+            f"0 disables global corpus dedupe, default {DEFAULT_GLOBAL_EMBEDDING_MAX_MB}"
+        ),
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto", help="Embedding device")
     parser.add_argument(
         "--keep-trivial-numeric-units",
@@ -105,6 +115,7 @@ def make_config(args: argparse.Namespace) -> RunConfig:
         band=args.band,
         keep_trivial_numeric_units=args.keep_trivial_numeric_units,
         similarity_matrix_max_mb=args.similarity_matrix_max_mb,
+        global_embedding_max_mb=args.global_embedding_max_mb,
     )
     validate_config(config)
     return config

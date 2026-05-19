@@ -46,6 +46,20 @@ class TmxPreparationTests(unittest.TestCase):
         self.assertEqual(prepared[0].similarity, 0.91)
         self.assertEqual(prepared[0].tuid, "better")
 
+    def test_prepare_tmx_units_keeps_first_duplicate_for_tiny_similarity_difference(self) -> None:
+        prepared, stats = prepare_tmx_units(
+            [
+                unit("Hello world", "Привет мир", 0.910000, "first"),
+                unit("Hello world", "Привет мир", 0.910001, "floating-point-near-tie"),
+            ]
+        )
+
+        self.assertEqual(stats.input_units, 2)
+        self.assertEqual(stats.written_units, 1)
+        self.assertEqual(stats.duplicate_units, 1)
+        self.assertEqual(prepared[0].tuid, "first")
+        self.assertEqual(prepared[0].similarity, 0.910000)
+
     def test_prepare_tmx_units_skips_standalone_numeric_pairs_by_default(self) -> None:
         prepared, stats = prepare_tmx_units(
             [

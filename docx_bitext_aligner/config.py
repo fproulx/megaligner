@@ -18,6 +18,7 @@ DEFAULT_CREATION_DATE = "19700101T000000Z"
 DEFAULT_SAMPLE_SIZE = 12
 DEFAULT_MIN_SIMILARITY = 0.45
 DEFAULT_SIMILARITY_MATRIX_MAX_MB = 512
+DEFAULT_GLOBAL_EMBEDDING_MAX_MB = 2048
 
 
 class PairProcessingError(RuntimeError):
@@ -53,6 +54,7 @@ class RunConfig:
     band: Optional[int] = None
     keep_trivial_numeric_units: bool = False
     similarity_matrix_max_mb: int = DEFAULT_SIMILARITY_MATRIX_MAX_MB
+    global_embedding_max_mb: int = DEFAULT_GLOBAL_EMBEDDING_MAX_MB
 
 
 def default_workers() -> int:
@@ -69,6 +71,8 @@ def validate_config(config: RunConfig) -> None:
         raise ValueError("--batch-size must be at least 1")
     if config.similarity_matrix_max_mb < 0:
         raise ValueError("--similarity-matrix-max-mb must be zero or greater")
+    if config.global_embedding_max_mb < 0:
+        raise ValueError("--global-embedding-max-mb must be zero or greater")
     if config.sample_size < 0:
         raise ValueError("--sample-size must be at least 0")
     if config.min_similarity is not None and not (-1.0 <= config.min_similarity <= 1.0):

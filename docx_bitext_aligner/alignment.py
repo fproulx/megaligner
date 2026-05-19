@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from docx_bitext_aligner.config import PairProcessingError, RunConfig
 from docx_bitext_aligner.embedding import encode_texts
-from docx_bitext_aligner.models import AlignmentUnit, BackPointer, Segment, SegmentWindow
+from docx_bitext_aligner.models import AlignmentUnit, BackPointer, PairWindows, Segment, SegmentWindow
 from docx_bitext_aligner.utils import normalize_space, safe_stem_for_tuid, timed_call
 
 FLOAT32_BYTES = 4
@@ -218,6 +218,42 @@ def align_segments(
     model: Any,
     config: RunConfig,
 ) -> tuple[list[AlignmentUnit], int, dict[str, float], int, int, int, int]:
+    pair_windows, timings = prepare_alignment_windows(src_segments, tgt_segments, config)
+    src_window_count = len(pair_windows.src_windows)
+    vectors = timed_call(
+        timings,
+        "encode",
+        encode_texts,
+        model,
+        [window.text for window in [*pair_windows.src_windows, *pair_windows.tgt_windows]],
+        config.batch_size,
+    )
+    src_vectors = vectors[:src_window_count]
+    tgt_vectors = vectors[src_window_count:]
+    units, dropped, alignment_timings, dp_full_retries = align_prepared_windows(
+        pair_windows,
+        stem,
+        src_vectors,
+        tgt_vectors,
+        config,
+    )
+    timings.update(alignment_timings)
+    return (
+        units,
+        dropped,
+        timings,
+        len(pair_windows.src_windows),
+        len(pair_windows.tgt_windows),
+        pair_windows.duplicate_window_texts,
+        dp_full_retries,
+    )
+
+
+def prepare_alignment_windows(
+    src_segments: list[Segment],
+    tgt_segments: list[Segment],
+    config: RunConfig,
+) -> tuple[PairWindows, dict[str, float]]:
     if not src_segments:
         raise PairProcessingError("Source document produced zero sentence segments")
     if not tgt_segments:
@@ -227,17 +263,28 @@ def align_segments(
     src_windows, src_lookup = timed_call(timings, "src_windows", make_windows, src_segments, config.max_group)
     tgt_windows, tgt_lookup = timed_call(timings, "tgt_windows", make_windows, tgt_segments, config.max_group)
     duplicate_window_texts = count_duplicate_window_texts([*src_windows, *tgt_windows])
-    src_window_count = len(src_windows)
-    vectors = timed_call(
+    return (
+        PairWindows(
+            src_segments=src_segments,
+            tgt_segments=tgt_segments,
+            src_windows=src_windows,
+            tgt_windows=tgt_windows,
+            src_lookup=src_lookup,
+            tgt_lookup=tgt_lookup,
+            duplicate_window_texts=duplicate_window_texts,
+        ),
         timings,
-        "encode",
-        encode_texts,
-        model,
-        [window.text for window in [*src_windows, *tgt_windows]],
-        config.batch_size,
     )
-    src_vectors = vectors[:src_window_count]
-    tgt_vectors = vectors[src_window_count:]
+
+
+def align_prepared_windows(
+    pair_windows: PairWindows,
+    stem: str,
+    src_vectors: Any,
+    tgt_vectors: Any,
+    config: RunConfig,
+) -> tuple[list[AlignmentUnit], int, dict[str, float], int]:
+    timings: dict[str, float] = {}
     similarities = timed_call(
         timings,
         "similarity_matrix",
@@ -247,17 +294,17 @@ def align_segments(
         config.similarity_matrix_max_mb,
     )
 
-    band = choose_band(len(src_segments), len(tgt_segments), config.band)
+    band = choose_band(len(pair_windows.src_segments), len(pair_windows.tgt_segments), config.band)
     dp_full_retries = 0
     try:
         units = timed_call(
             timings,
             "dp",
             run_alignment_dp,
-            src_segments,
-            tgt_segments,
-            src_lookup,
-            tgt_lookup,
+            pair_windows.src_segments,
+            pair_windows.tgt_segments,
+            pair_windows.src_lookup,
+            pair_windows.tgt_lookup,
             src_vectors,
             tgt_vectors,
             similarities,
@@ -271,10 +318,10 @@ def align_segments(
                 timings,
                 "dp_full_retry",
                 run_alignment_dp,
-                src_segments,
-                tgt_segments,
-                src_lookup,
-                tgt_lookup,
+                pair_windows.src_segments,
+                pair_windows.tgt_segments,
+                pair_windows.src_lookup,
+                pair_windows.tgt_lookup,
                 src_vectors,
                 tgt_vectors,
                 similarities,
@@ -321,7 +368,7 @@ def align_segments(
 
     if not stable_units:
         raise PairProcessingError("Alignment produced zero usable translation units")
-    return stable_units, dropped, timings, len(src_windows), len(tgt_windows), duplicate_window_texts, dp_full_retries
+    return stable_units, dropped, timings, dp_full_retries
 
 
 def make_tuid(

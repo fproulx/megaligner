@@ -105,6 +105,8 @@ For combined TMX output, exact duplicates are kept once across the whole corpus.
 
 At the end of a run, the `TMX output` summary is the authoritative final count. It reports how many low-similarity units were filtered, how many duplicates were removed, and how many translation units were written.
 
+For speed, combined TMX output embeds repeated text only once across the selected folder. This is useful for UN-style corpora with repeated headers, table labels, and boilerplate. Very large corpora automatically fall back to a lower-memory path; advanced users can force that comparison with `ALIGN_ARGS="--global-embedding-max-mb 0"`.
+
 MEGAligner also writes QA side reports next to the TMX file. For `aligned.tmx`, the reports are:
 
 ```text

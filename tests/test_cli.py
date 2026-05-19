@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from docx_bitext_aligner.cli import make_config, parse_args
-from docx_bitext_aligner.config import DEFAULT_MIN_SIMILARITY
+from docx_bitext_aligner.config import DEFAULT_GLOBAL_EMBEDDING_MAX_MB, DEFAULT_MIN_SIMILARITY
 
 
 class CliTests(unittest.TestCase):
@@ -60,6 +60,13 @@ class CliTests(unittest.TestCase):
         config = make_config(args)
 
         self.assertEqual(config.similarity_matrix_max_mb, 0)
+
+    def test_global_embedding_memory_guard_flag(self) -> None:
+        args = parse_args(["documents", "out", "--global-embedding-max-mb", "0"])
+        config = make_config(args)
+
+        self.assertEqual(config.global_embedding_max_mb, 0)
+        self.assertNotEqual(config.global_embedding_max_mb, DEFAULT_GLOBAL_EMBEDDING_MAX_MB)
 
 
 if __name__ == "__main__":

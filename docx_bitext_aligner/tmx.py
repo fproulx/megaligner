@@ -13,6 +13,7 @@ from docx_bitext_aligner.utils import is_numericish_text, normalize_space
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 TMX_DOCTYPE = '<!DOCTYPE tmx SYSTEM "tmx14.dtd">'
 TMX_CREATION_TOOL = "align-docx"
+DUPLICATE_SIMILARITY_EPSILON = 1e-5
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,7 @@ def prepare_tmx_units(
         existing_index = seen.get(key)
         if existing_index is not None:
             duplicate_units += 1
-            if normalized.similarity > prepared[existing_index].similarity:
+            if normalized.similarity > prepared[existing_index].similarity + DUPLICATE_SIMILARITY_EPSILON:
                 prepared[existing_index] = normalized
             continue
 

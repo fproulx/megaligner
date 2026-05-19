@@ -79,6 +79,17 @@ class PairAlignment:
     timings: dict[str, float]
 
 
+@dataclass
+class PairWindows:
+    src_segments: list[Segment]
+    tgt_segments: list[Segment]
+    src_windows: list[SegmentWindow]
+    tgt_windows: list[SegmentWindow]
+    src_lookup: dict[tuple[int, int], SegmentWindow]
+    tgt_lookup: dict[tuple[int, int], SegmentWindow]
+    duplicate_window_texts: int
+
+
 @dataclass(frozen=True)
 class BackPointer:
     prev_i: int

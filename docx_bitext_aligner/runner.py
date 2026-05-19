@@ -5,15 +5,15 @@ import concurrent.futures
 import sys
 import time
 import traceback
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from docx_bitext_aligner.alignment import align_segments
+from docx_bitext_aligner.alignment import align_prepared_windows, prepare_alignment_windows
 from docx_bitext_aligner.config import PairProcessingError, RunConfig
 from docx_bitext_aligner.discovery import DiscoveryResult, PairJob, discover_pairs
-from docx_bitext_aligner.embedding import load_embedding_model
-from docx_bitext_aligner.models import AlignmentUnit, PairAlignment, PairResult
+from docx_bitext_aligner.embedding import encode_texts, load_embedding_model
+from docx_bitext_aligner.models import AlignmentUnit, PairAlignment, PairResult, PairWindows, SegmentWindow
 from docx_bitext_aligner.qa import QaReportResult, format_qa_console_summary, write_qa_report
 from docx_bitext_aligner.reports import write_combined_report, write_report
 from docx_bitext_aligner.text import extract_docx_paragraphs, segment_paragraphs
@@ -22,6 +22,14 @@ from docx_bitext_aligner.utils import format_duration, timed_call
 
 _MODEL: Any | None = None
 _WORKER_CONFIG: RunConfig | None = None
+
+
+@dataclass
+class PreparedCombinedPair:
+    index: int
+    job: PairJob
+    pair_windows: PairWindows
+    timings: dict[str, float]
 
 
 def align_pair(
@@ -36,8 +44,48 @@ def align_pair(
     if not tgt_path.exists():
         raise PairProcessingError(f"Missing target file: {tgt_path}")
 
-    timings: dict[str, float] = {}
     total_started = time.perf_counter()
+    pair_windows, timings = prepare_pair_windows(src_path, tgt_path, config)
+    src_window_count = len(pair_windows.src_windows)
+    vectors = timed_call(
+        timings,
+        "encode",
+        encode_texts,
+        model,
+        [window.text for window in [*pair_windows.src_windows, *pair_windows.tgt_windows]],
+        config.batch_size,
+    )
+    src_vectors = vectors[:src_window_count]
+    tgt_vectors = vectors[src_window_count:]
+    units, dropped, alignment_timings, dp_full_retries = align_prepared_windows(
+        pair_windows,
+        stem,
+        src_vectors,
+        tgt_vectors,
+        config,
+    )
+    timings.update(alignment_timings)
+    timings["total"] = time.perf_counter() - total_started
+    return PairAlignment(
+        units=units,
+        dropped=dropped,
+        src_segments=pair_windows.src_segments,
+        tgt_segments=pair_windows.tgt_segments,
+        src_windows=len(pair_windows.src_windows),
+        tgt_windows=len(pair_windows.tgt_windows),
+        duplicate_window_texts=pair_windows.duplicate_window_texts,
+        dp_full_retries=dp_full_retries,
+        timings=timings,
+    )
+
+
+def prepare_pair_windows(src_path: Path, tgt_path: Path, config: RunConfig) -> tuple[PairWindows, dict[str, float]]:
+    if not src_path.exists():
+        raise PairProcessingError(f"Missing source file: {src_path}")
+    if not tgt_path.exists():
+        raise PairProcessingError(f"Missing target file: {tgt_path}")
+
+    timings: dict[str, float] = {}
     src_paragraphs = timed_call(timings, "src_extract", extract_docx_paragraphs, src_path)
     tgt_paragraphs = timed_call(timings, "tgt_extract", extract_docx_paragraphs, tgt_path)
     if not src_paragraphs:
@@ -47,28 +95,9 @@ def align_pair(
 
     src_segments = timed_call(timings, "src_segment", segment_paragraphs, src_paragraphs, config.src_lang)
     tgt_segments = timed_call(timings, "tgt_segment", segment_paragraphs, tgt_paragraphs, config.tgt_lang)
-    (
-        units,
-        dropped,
-        segment_timings,
-        src_windows,
-        tgt_windows,
-        duplicate_window_texts,
-        dp_full_retries,
-    ) = align_segments(src_segments, tgt_segments, stem, model, config)
-    timings.update(segment_timings)
-    timings["total"] = time.perf_counter() - total_started
-    return PairAlignment(
-        units=units,
-        dropped=dropped,
-        src_segments=src_segments,
-        tgt_segments=tgt_segments,
-        src_windows=src_windows,
-        tgt_windows=tgt_windows,
-        duplicate_window_texts=duplicate_window_texts,
-        dp_full_retries=dp_full_retries,
-        timings=timings,
-    )
+    pair_windows, window_timings = prepare_alignment_windows(src_segments, tgt_segments, config)
+    timings.update(window_timings)
+    return pair_windows, timings
 
 
 def align_one_pair(
@@ -265,6 +294,106 @@ def discovery_with_output(discovery: DiscoveryResult, output_path: Path) -> Disc
     )
 
 
+def unique_window_texts(prepared_pairs: list[PreparedCombinedPair]) -> tuple[list[str], dict[str, int], int]:
+    unique_texts: list[str] = []
+    indexes: dict[str, int] = {}
+    total = 0
+    for prepared in prepared_pairs:
+        for window in [*prepared.pair_windows.src_windows, *prepared.pair_windows.tgt_windows]:
+            total += 1
+            if window.text not in indexes:
+                indexes[window.text] = len(unique_texts)
+                unique_texts.append(window.text)
+    return unique_texts, indexes, total
+
+
+def vectors_for_windows(vectors: Any, indexes: dict[str, int], windows: list[SegmentWindow]) -> Any:
+    import numpy as np
+
+    vector_indexes = np.asarray([indexes[window.text] for window in windows], dtype=np.int64)
+    return vectors[vector_indexes]
+
+
+def model_embedding_dimension(model: Any) -> int:
+    for method_name in ("get_embedding_dimension", "get_sentence_embedding_dimension"):
+        getter = getattr(model, method_name, None)
+        if callable(getter):
+            dimension = getter()
+            if dimension:
+                return int(dimension)
+    return 768
+
+
+def embedding_vector_cache_mb(unique_text_count: int, embedding_dimension: int) -> float:
+    return unique_text_count * embedding_dimension * 4 / (1024 * 1024)
+
+
+def should_use_global_embedding(unique_text_count: int, embedding_dimension: int, max_mb: int) -> bool:
+    return max_mb > 0 and embedding_vector_cache_mb(unique_text_count, embedding_dimension) <= max_mb
+
+
+def timing_subtotal(timings: dict[str, float]) -> float:
+    return sum(seconds for key, seconds in timings.items() if key != "total")
+
+
+def align_prepared_pair(
+    prepared: PreparedCombinedPair,
+    config: RunConfig,
+    model: Any,
+    output_path: Path,
+    global_vectors: Any | None = None,
+    text_indexes: dict[str, int] | None = None,
+) -> tuple[PairResult, list[AlignmentUnit]]:
+    job = prepared.job
+    timings = dict(prepared.timings)
+    if global_vectors is None:
+        src_window_count = len(prepared.pair_windows.src_windows)
+        vectors = timed_call(
+            timings,
+            "encode",
+            encode_texts,
+            model,
+            [window.text for window in [*prepared.pair_windows.src_windows, *prepared.pair_windows.tgt_windows]],
+            config.batch_size,
+        )
+        src_vectors = vectors[:src_window_count]
+        tgt_vectors = vectors[src_window_count:]
+    else:
+        if text_indexes is None:
+            raise PairProcessingError("Global vectors were supplied without text indexes")
+        src_vectors = vectors_for_windows(global_vectors, text_indexes, prepared.pair_windows.src_windows)
+        tgt_vectors = vectors_for_windows(global_vectors, text_indexes, prepared.pair_windows.tgt_windows)
+
+    units, dropped, alignment_timings, dp_full_retries = align_prepared_windows(
+        prepared.pair_windows,
+        job.stem,
+        src_vectors,
+        tgt_vectors,
+        config,
+    )
+    timings.update(alignment_timings)
+    timings["total"] = timing_subtotal(timings)
+    return (
+        PairResult(
+            stem=job.stem,
+            status="succeeded",
+            out_path=output_path,
+            alignments=len(units),
+            raw_alignments=len(units),
+            dropped=dropped,
+            tmx_units_final=False,
+            src_segments=len(prepared.pair_windows.src_segments),
+            tgt_segments=len(prepared.pair_windows.tgt_segments),
+            src_windows=len(prepared.pair_windows.src_windows),
+            tgt_windows=len(prepared.pair_windows.tgt_windows),
+            duplicate_window_texts=prepared.pair_windows.duplicate_window_texts,
+            dp_full_retries=dp_full_retries,
+            timings=timings,
+        ),
+        units,
+    )
+
+
 def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_path: Path) -> int:
     if output_path.exists() and not config.force:
         print(f"Combined output exists: {output_path}", file=sys.stderr)
@@ -274,43 +403,84 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
     from tqdm import tqdm
 
     model = load_embedding_model(config)
+    combined_timings: dict[str, float] = {}
     all_units: list[AlignmentUnit] = []
-    results: list[PairResult] = []
-    with tqdm(total=len(discovery.jobs), unit="pair", desc="Aligning", disable=not sys.stderr.isatty()) as progress:
-        for job in discovery.jobs:
+    results_by_index: list[PairResult | None] = [None] * len(discovery.jobs)
+    prepared_pairs: list[PreparedCombinedPair] = []
+
+    with tqdm(total=len(discovery.jobs), unit="pair", desc="Preparing", disable=not sys.stderr.isatty()) as progress:
+        for index, job in enumerate(discovery.jobs):
             try:
-                alignment = align_pair(job.src_path, job.tgt_path, job.stem, config, model)
-                all_units.extend(alignment.units)
-                result = PairResult(
-                    stem=job.stem,
-                    status="succeeded",
-                    out_path=output_path,
-                    alignments=len(alignment.units),
-                    raw_alignments=len(alignment.units),
-                    dropped=alignment.dropped,
-                    tmx_units_final=False,
-                    src_segments=len(alignment.src_segments),
-                    tgt_segments=len(alignment.tgt_segments),
-                    src_windows=alignment.src_windows,
-                    tgt_windows=alignment.tgt_windows,
-                    duplicate_window_texts=alignment.duplicate_window_texts,
-                    dp_full_retries=alignment.dp_full_retries,
-                    timings=alignment.timings,
+                pair_windows, timings = prepare_pair_windows(job.src_path, job.tgt_path, config)
+                prepared_pairs.append(
+                    PreparedCombinedPair(
+                        index=index,
+                        job=job,
+                        pair_windows=pair_windows,
+                        timings=timings,
+                    )
                 )
             except Exception as exc:
-                result = PairResult(
+                results_by_index[index] = PairResult(
                     stem=job.stem,
                     status="failed",
                     out_path=output_path,
                     reason=str(exc),
                     traceback_text=traceback.format_exc(),
                 )
-            results.append(result)
+            status = "failed" if results_by_index[index] is not None else "prepared"
+            progress.set_postfix_str(f"{status} {job.stem}")
+            progress.update(1)
+            if config.verbosity >= 1 and results_by_index[index] is not None:
+                tqdm.write(format_pair_result(results_by_index[index]), file=sys.stderr)
+
+    unique_texts, text_indexes, total_window_texts = unique_window_texts(prepared_pairs)
+    embedding_dimension = model_embedding_dimension(model)
+    global_vector_cache_mb = embedding_vector_cache_mb(len(unique_texts), embedding_dimension)
+    use_global_embedding = should_use_global_embedding(
+        len(unique_texts),
+        embedding_dimension,
+        config.global_embedding_max_mb,
+    )
+    global_vectors = None
+    if use_global_embedding:
+        global_vectors = timed_call(
+            combined_timings,
+            "encode",
+            encode_texts,
+            model,
+            unique_texts,
+            config.batch_size,
+        )
+    global_duplicate_window_texts = total_window_texts - len(unique_texts)
+
+    with tqdm(total=len(prepared_pairs), unit="pair", desc="Aligning", disable=not sys.stderr.isatty()) as progress:
+        for prepared in prepared_pairs:
+            try:
+                result, units = align_prepared_pair(
+                    prepared,
+                    config,
+                    model,
+                    output_path,
+                    global_vectors,
+                    text_indexes if use_global_embedding else None,
+                )
+                all_units.extend(units)
+            except Exception as exc:
+                result = PairResult(
+                    stem=prepared.job.stem,
+                    status="failed",
+                    out_path=output_path,
+                    reason=str(exc),
+                    traceback_text=traceback.format_exc(),
+                )
+            results_by_index[prepared.index] = result
             progress.set_postfix_str(f"{result.status} {result.stem}")
             progress.update(1)
             if config.verbosity >= 1:
                 tqdm.write(format_pair_result(result), file=sys.stderr)
 
+    results = [result for result in results_by_index if result is not None]
     failed = [result for result in results if result.status == "failed"]
     if failed:
         print_summary(results, discovery)
@@ -321,7 +491,6 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
         print("Combined TMX was not written because no translation units were produced.", file=sys.stderr)
         return 1
 
-    combined_timings: dict[str, float] = {}
     write_result = timed_call(combined_timings, "write_combined_tmx", write_tmx, all_units, output_path, config)
     write_stats = write_result.stats
     qa_result = timed_call(combined_timings, "write_qa_report", write_qa_report, output_path, write_result.units, config)
@@ -340,6 +509,15 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
     print_tmx_write_stats(write_stats)
     print(format_qa_console_summary(qa_result))
     if config.profile:
+        print_global_embedding_profile(
+            total_window_texts,
+            len(unique_texts),
+            global_duplicate_window_texts,
+            embedding_dimension,
+            global_vector_cache_mb,
+            use_global_embedding,
+            config.global_embedding_max_mb,
+        )
         print_profile(results, combined_timings)
     print(f"Combined TMX: {output_path}")
     return 0
@@ -543,6 +721,29 @@ def print_tmx_write_stats(stats: TmxWriteStats) -> None:
         print(f"  whitespace-normalized units: {stats.normalized_units}")
     if stats.trivial_numeric_units:
         print(f"  trivial numeric units skipped: {stats.trivial_numeric_units}")
+
+
+def print_global_embedding_profile(
+    total_window_texts: int,
+    unique_window_texts_count: int,
+    duplicate_window_texts: int,
+    embedding_dimension: int,
+    vector_cache_mb: float,
+    used_global_embedding: bool,
+    max_mb: int,
+) -> None:
+    print("Global embedding")
+    print(f"  window texts: {total_window_texts}")
+    print(f"  unique window texts: {unique_window_texts_count}")
+    print(f"  duplicate window texts: {duplicate_window_texts}")
+    print(f"  embedding dimension: {embedding_dimension}")
+    print(f"  estimated vector cache: {vector_cache_mb:.1f} MB")
+    if used_global_embedding:
+        print("  mode: global corpus dedupe")
+    elif max_mb == 0:
+        print("  mode: pair-local fallback (--global-embedding-max-mb=0)")
+    else:
+        print(f"  mode: pair-local fallback (global cache would exceed {max_mb} MB)")
 
 
 def print_profile(results: list[PairResult], extra_timings: Optional[dict[str, float]] = None) -> None:

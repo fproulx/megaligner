@@ -31,13 +31,15 @@ The current combined-output workflow is:
 3. For each pair, serially:
    - extract DOCX paragraphs,
    - split paragraphs into sentence segments,
-   - build grouped segment windows,
-   - encode the pair's unique window texts with LaBSE and scatter duplicate
-     windows back to their original positions,
+   - build grouped segment windows.
+4. Collect every segment-window string across the corpus, deduplicate exact
+   strings globally, and encode each unique string once with LaBSE.
+5. For each prepared pair, serially:
+   - attach the already encoded vectors back to the pair's windows,
    - run monotonic dynamic programming,
    - append the pair's alignment units.
-4. Write one combined TMX.
-5. Trim and normalize whitespace, remove exact duplicate EN/RU pairs, and emit QA
+6. Write one combined TMX.
+7. Trim and normalize whitespace, remove exact duplicate EN/RU pairs, and emit QA
    sidecar reports.
 
 Relevant files:
@@ -49,9 +51,9 @@ Relevant files:
 - `docx_bitext_aligner/tmx.py`: TMX cleanup, deduplication, validation, write.
 - `docx_bitext_aligner/qa.py`: QA sidecar reports.
 
-Current limitation: `run_combined_batch` processes pairs strictly serially. The
-`WORKERS` setting helps per-file batch mode, but not the default combined-TMX
-path.
+Current limitation: `run_combined_batch` still runs extraction, segmentation,
+window generation, and DP serially. The `WORKERS` setting helps per-file batch
+mode, but not the default combined-TMX path.
 
 ## Real Corpus Observations
 
@@ -85,6 +87,26 @@ Takeaways:
   window-text deduplication before embedding.
 - The largest pairs dominate the output volume, so optimizing embedding and DP
   on large pairs matters more than micro-optimizing TMX writing.
+
+After QA cleanup and low-risk performance work, the same 99-pair corpus produces
+about 21,089 TMX units. The current measured global-embedding run completed the
+core pair work in about 6 minutes on the M4 Pro test machine:
+
+| Profile Metric | Previous Local-Dedupe Run | Global-Dedupe Run |
+|---|---:|---:|
+| Pair/profile time | 420.28s | 362.78s approx. |
+| Embedding time | 252.77s | 197.42s |
+| DP time | 148.02s | 146.66s |
+| Window texts | 220,811 | 220,811 |
+| Unique globally encoded window texts | n/a | 87,294 |
+| Duplicate global window texts | n/a | 133,517 |
+
+The global-dedupe output preserved the same ordered EN/RU text pairs and QA
+counts as the previous run. It was not byte-identical because similarity props
+can move by about `1e-6`, and exact duplicate pairs can otherwise keep a
+different duplicate TUID. TMX duplicate cleanup now ignores similarity
+differences under `1e-5` so those floating-point slivers do not create pointless
+provenance churn.
 
 ## Baseline Before Optimizing
 
@@ -184,8 +206,9 @@ Rework combined mode around one shared model and larger encode batches:
 9. Preserve the existing gate: if any pair failed, do not write the combined TMX.
 10. Write the combined TMX and QA sidecars once.
 
-This should be preferred before process-pool parallelism on Apple Silicon,
-because it avoids multiple model copies and should feed MPS more efficiently.
+Implemented for combined-output mode. This was the right step before
+process-pool parallelism on Apple Silicon, because it avoids multiple model
+copies and feeds MPS with a larger unique text workload.
 
 ### Phase 4: Conditional Deeper Work
 
@@ -279,6 +302,19 @@ At 300,000 unique windows, vectors take about 0.9 GB. At 800,000, they take
 about 2.3 GB. Add a threshold and fallback so a MacBook Air does not suffer from
 memory pressure.
 
+Implemented result on the 99-pair corpus:
+
+- 220,811 total window texts.
+- 87,294 unique global window texts.
+- About 55 seconds less embedding time than pair-local dedupe.
+- Same ordered EN/RU output pairs and same QA counts.
+
+The implementation has a configurable vector-memory guard,
+`--global-embedding-max-mb`. The default keeps global dedupe on for normal UN
+meeting-size corpora and falls back to pair-local encoding before the global
+vector cache becomes too large. Use `--global-embedding-max-mb 0` to force the
+pair-local path for comparison.
+
 ### 6. Tune Batch Size on Apple Silicon
 
 Benchmark:
@@ -289,6 +325,9 @@ Benchmark:
 - `--batch-size 256`
 
 Do not change the default until measured on representative Mac hardware.
+
+Initial evidence: `--batch-size 128` was slower than the default `64` on the M4
+Pro test run, so increasing batch size is not the current lever.
 
 ### 7. Pin Torch Threads for CPU Worker Modes
 
