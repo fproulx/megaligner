@@ -13,9 +13,6 @@ concurrency:
   group: release-macos-main
   cancel-in-progress: false
 
-env:
-  RELEASE_TAG: macos-latest
-
 jobs:
   release-macos:
     name: Build and publish macOS app
@@ -117,6 +114,7 @@ jobs:
             echo "zip_path=$zip_path"
             echo "zip_name=$(basename "$zip_path")"
             echo "short_sha=${GITHUB_SHA::7}"
+            echo "release_tag=macos-${version}-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::7}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifact
@@ -132,14 +130,10 @@ jobs:
           VERSION: ${{ steps.package.outputs.version }}
           ZIP_PATH: ${{ steps.package.outputs.zip_path }}
           SHORT_SHA: ${{ steps.package.outputs.short_sha }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
           CODESIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
         run: |
           set -eu
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
-          git push --force origin "refs/tags/$RELEASE_TAG"
 
           notes_file="$RUNNER_TEMP/release-notes.md"
           if [ -n "${CODESIGN_IDENTITY:-}" ]; then
@@ -162,26 +156,9 @@ jobs:
           First launch may download the Python runtime dependencies and language model into \`~/Library/Application Support/MEGAligner\`.
           EOF
 
-          title="MEGAligner $VERSION for macOS"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
-              --title "$title" \
-              --notes-file "$notes_file" \
-              --target "$GITHUB_SHA" \
-              --latest
-          else
-            gh release create "$RELEASE_TAG" \
-              --title "$title" \
-              --notes-file "$notes_file" \
-              --target "$GITHUB_SHA" \
-              --latest
-          fi
-
-          gh release view "$RELEASE_TAG" --json assets \
-            --jq '.assets[] | select(.name | test("^MEGAligner-.*-macos-.*\\.zip$")) | .id' \
-            | while read -r asset_id; do
-                [ -n "$asset_id" ] || continue
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-              done
-
-          gh release upload "$RELEASE_TAG" "$ZIP_PATH"
+          title="MEGAligner $VERSION for macOS ($SHORT_SHA)"
+          gh release create "$RELEASE_TAG" "$ZIP_PATH" \
+            --title "$title" \
+            --notes-file "$notes_file" \
+            --target "$GITHUB_SHA" \
+            --latest
