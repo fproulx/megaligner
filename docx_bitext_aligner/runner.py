@@ -24,6 +24,10 @@ _MODEL: Any | None = None
 _WORKER_CONFIG: RunConfig | None = None
 
 
+def print_status(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 @dataclass
 class PreparedCombinedPair:
     index: int
@@ -444,6 +448,10 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
     )
     global_vectors = None
     if use_global_embedding:
+        print_status(
+            f"Encoding {len(unique_texts)} unique text windows from {len(prepared_pairs)} prepared pair(s) "
+            f"before alignment. Estimated vector cache: {global_vector_cache_mb:.1f} MB."
+        )
         global_vectors = timed_call(
             combined_timings,
             "encode",
@@ -451,7 +459,11 @@ def run_combined_batch(discovery: DiscoveryResult, config: RunConfig, output_pat
             model,
             unique_texts,
             config.batch_size,
+            show_progress_bar=sys.stderr.isatty(),
         )
+        print_status("Encoding complete. Starting pair alignment.")
+    else:
+        print_status("Starting pair alignment with per-pair embedding.")
     global_duplicate_window_texts = total_window_texts - len(unique_texts)
 
     with tqdm(total=len(prepared_pairs), unit="pair", desc="Aligning", disable=not sys.stderr.isatty()) as progress:

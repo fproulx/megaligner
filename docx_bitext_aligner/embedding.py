@@ -72,7 +72,7 @@ def load_embedding_model(config: RunConfig) -> Any:
         raise ModelLoadError(f"Could not load embedding model {config.model!r}; expected {mode}") from exc
 
 
-def encode_texts(model: Any, texts: list[str], batch_size: int) -> Any:
+def encode_texts(model: Any, texts: list[str], batch_size: int, show_progress_bar: bool = False) -> Any:
     import numpy as np
 
     if not texts:
@@ -93,7 +93,7 @@ def encode_texts(model: Any, texts: list[str], batch_size: int) -> Any:
         batch_size=batch_size,
         convert_to_numpy=True,
         normalize_embeddings=True,
-        show_progress_bar=False,
+        show_progress_bar=show_progress_bar,
     )
     unique_vectors = np.asarray(vectors, dtype=np.float32)
     if len(unique_texts) == len(texts):
